@@ -86,33 +86,31 @@ class Ledger:
         2. This code uses f-strings instead of bind parameters.
             This can result in SQL injection vulnerabilities.
         '''
-
-        # insert the transaction
-        sql = text(f'INSERT INTO transactions (debit_account_id, credit_account_id, amount) VALUES ({debit_account_id}, {credit_account_id}, {amount});')
-        logging.debug(sql)
-        self.connection.execute(sql)
         self.connection.commit()
+        with self.connection.begin():
+            # insert the transaction
+            sql = text(f'INSERT INTO transactions (debit_account_id, credit_account_id, amount) VALUES ({debit_account_id}, {credit_account_id}, {amount});')
+            logging.debug(sql)
+            self.connection.execute(sql)
 
-        # update the debit account balance
-        sql = text(f'SELECT balance FROM balances WHERE account_id = {debit_account_id};')
-        logging.debug(sql)
-        results = self.connection.execute(sql)
-        debit_account_balance = results.first()[0]
+            # update the debit account balance
+            sql = text(f'SELECT balance FROM balances WHERE account_id = {debit_account_id};')
+            logging.debug(sql)
+            results = self.connection.execute(sql)
+            debit_account_balance = results.first()[0]
 
-        debit_new_balance = debit_account_balance - amount
-        sql = text(f'UPDATE balances SET balance={debit_new_balance} WHERE account_id = {debit_account_id};')
-        logging.debug(sql)
-        self.connection.execute(sql)
-        self.connection.commit()
+            debit_new_balance = debit_account_balance - amount
+            sql = text(f'UPDATE balances SET balance={debit_new_balance} WHERE account_id = {debit_account_id};')
+            logging.debug(sql)
+            self.connection.execute(sql)
 
-        # update the credit account balance
-        sql = text(f'SELECT balance FROM balances WHERE account_id = {credit_account_id};')
-        logging.debug(sql)
-        results = self.connection.execute(sql)
-        credit_account_balance = results.first()[0]
+            # update the credit account balance
+            sql = text(f'SELECT balance FROM balances WHERE account_id = {credit_account_id};')
+            logging.debug(sql)
+            results = self.connection.execute(sql)
+            credit_account_balance = results.first()[0]
 
-        credit_new_balance = credit_account_balance + amount
-        sql = text(f'UPDATE balances SET balance={credit_new_balance} WHERE account_id = {credit_account_id};')
-        logging.debug(sql)
-        self.connection.execute(sql)
-        self.connection.commit()
+            credit_new_balance = credit_account_balance + amount
+            sql = text(f'UPDATE balances SET balance={credit_new_balance} WHERE account_id = {credit_account_id};')
+            logging.debug(sql)
+            self.connection.execute(sql)
