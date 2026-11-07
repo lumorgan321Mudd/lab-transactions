@@ -25,13 +25,11 @@ class Ledger:
         self.connection = self.engine.connect()
 
     def get_all_account_ids(self):
-        '''
-        This function is used inside of the random_transfers.py script.
-        '''
         sql = text('SELECT account_id FROM accounts;')
         logging.debug(sql)
-        results = self.connection.execute(sql)
-        return [row[0] for row in results.all()]
+        with self.connection.begin():
+            results = self.connection.execute(sql)
+            return [row[0] for row in results.all()]
 
     def create_account(self, name):
         '''
@@ -61,60 +59,33 @@ class Ledger:
             sql = sql.bindparams(account_id=account_id)
             logging.debug(sql)
             self.connection.execute(sql)
+    
+    def transfer_funds(self, debit_account_id, credit_account_id, amount):
+        while True:
+            try:
+                with self.connection.begin():
+                    sql = text('INSERT INTO transactions (debit_account_id, credit_account_id, amount) '
+                               'VALUES (:d, :c, :a);')
+                    sql = sql.bindparams(d=debit_account_id, c=credit_account_id, a=amount)
+                    logging.debug(sql)
+                    self.connection.execute(sql)
 
-    def transfer_funds(
-            self,
-            debit_account_id,
-            credit_account_id,
-            amount
-            ):
-        '''
-        This function adds a row to the "transactions" table with the specified input values.
-        It also updates the "balances" table to apply the debits and credits to the appropriate accounts.
+                    # lock rows in a canonical (sorted) order to avoid deadlocks
+                    for acct, delta in sorted(
+                        [(debit_account_id, -amount), (credit_account_id, +amount)]
+                    ):
+                        sql = text('SELECT balance FROM balances WHERE account_id = :a FOR UPDATE;')
+                        sql = sql.bindparams(a=acct)
+                        logging.debug(sql)
+                        bal = self.connection.execute(sql).first()[0]
 
-        Notice two differences between this function and the code in `create_account`:
-        1. This function does not use the connection.begin() function to start a transaction.
-            When commands are not inside of a transaction block like this,
-            then SQLAlchemy uses implicit transactions by default.
-            This means that whenever a connection.execute command is called,
-            SQLAlchemy will also call the BEGIN command internally.
-            In order for a database modifying command (e.g. INSERT or UPDATE) to actually commit the value,
-            you must call the self.connection.commit() command explicitly.
-            It is also possible to enable "autocommit" to automatically commit these changes for you.
-            The documentation contains detailed explanations: <https://docs.sqlalchemy.org/en/20/tutorial/dbapi_transactions.html>.
-
-        2. This code uses f-strings instead of bind parameters.
-            This can result in SQL injection vulnerabilities.
-        '''
-        self.connection.commit()
-        with self.connection.begin():
-            sql = text('LOCK TABLE balances IN ACCESS EXCLUSIVE MODE;')
-            logging.debug(sql)
-            self.connection.execute(sql)
-
-            # insert the transaction
-            sql = text(f'INSERT INTO transactions (debit_account_id, credit_account_id, amount) VALUES ({debit_account_id}, {credit_account_id}, {amount});')
-            logging.debug(sql)
-            self.connection.execute(sql)
-
-            # update the debit account balance
-            sql = text(f'SELECT balance FROM balances WHERE account_id = {debit_account_id};')
-            logging.debug(sql)
-            results = self.connection.execute(sql)
-            debit_account_balance = results.first()[0]
-
-            debit_new_balance = debit_account_balance - amount
-            sql = text(f'UPDATE balances SET balance={debit_new_balance} WHERE account_id = {debit_account_id};')
-            logging.debug(sql)
-            self.connection.execute(sql)
-
-            # update the credit account balance
-            sql = text(f'SELECT balance FROM balances WHERE account_id = {credit_account_id};')
-            logging.debug(sql)
-            results = self.connection.execute(sql)
-            credit_account_balance = results.first()[0]
-
-            credit_new_balance = credit_account_balance + amount
-            sql = text(f'UPDATE balances SET balance={credit_new_balance} WHERE account_id = {credit_account_id};')
-            logging.debug(sql)
-            self.connection.execute(sql)
+                        sql = text('UPDATE balances SET balance = :b WHERE account_id = :a;')
+                        sql = sql.bindparams(b=bal + delta, a=acct)
+                        logging.debug(sql)
+                        self.connection.execute(sql)
+                return
+            except DBAPIError as e:
+                # sqlalchemy's `with connection.begin()` already rolled back;
+                # postgres picked us as the deadlock victim. retry.
+                logging.warning(f'deadlock, retrying: {e.orig}')
+                continue
